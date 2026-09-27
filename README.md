@@ -18,6 +18,7 @@ Xray-core/sing-box 一键脚本快速安装
 *   **自动TLS:** 自动申请和续订 SSL 证书.
 *   **易于管理:** 提供简单的菜单来管理用户、端口和配置.
 *   **订阅支持:** 生成和管理订阅链接.
+*   **搬瓦工流量显示（可选）:** 通过 KiwiVM API 在 Clash Verge Rev 订阅卡片显示整台 VPS 的已用流量和额度，沿用原订阅链接。[配置说明](documents/bandwagon_traffic.md)
 *   **分流管理:** 提供wireguard、IPv6、Socks5、DNS、VMess(ws)、SNI反向代理，可用于解锁流媒体、规避IP验证等作用.
 *   **目标域名管理:** 提供域名黑名单管理，可用于禁止访问指定网站.
 *   **BT下载管理:** 可用于禁止下载P2P相关内容.
@@ -28,7 +29,7 @@ Xray-core/sing-box 一键脚本快速安装
 ### 安装脚本版
 
 ```
-wget -P /root -N --no-check-certificate "https://raw.githubusercontent.com/mack-a/v2ray-agent/master/install.sh" && chmod 700 /root/install.sh && /root/install.sh
+wget -P /root -N --no-check-certificate "https://raw.githubusercontent.com/Kenny-Xiang/v2ray-agent/master/install.sh" && chmod 700 /root/install.sh && /root/install.sh
 ```
 
 ### 使用
