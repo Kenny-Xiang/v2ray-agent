@@ -6089,6 +6089,7 @@ unInstall() {
     fi
     # checkBTPanel
     echoContent yellow " ---> 脚本不会删除acme相关配置，删除请手动执行 [rm -rf /root/.acme.sh]"
+    removeBWGTrafficTimer
     handleNginx stop
     if [[ -z $(pgrep -f "nginx") ]]; then
         echoContent green " ---> 停止Nginx成功"
@@ -6581,9 +6582,9 @@ updateV2RayAgent() {
     echoContent skyBlue "\n进度  $1/${totalProgress} : 更新v2ray-agent脚本"
     rm -rf /etc/v2ray-agent/install.sh
     if [[ "${release}" == "alpine" ]]; then
-        wget -c -q -P /etc/v2ray-agent/ -N --no-check-certificate "https://raw.githubusercontent.com/mack-a/v2ray-agent/master/install.sh"
+        wget -c -q -P /etc/v2ray-agent/ -N --no-check-certificate "https://raw.githubusercontent.com/Kenny-Xiang/v2ray-agent/master/install.sh"
     else
-        wget -c -q "${wgetShowProgressStatus}" -P /etc/v2ray-agent/ -N --no-check-certificate "https://raw.githubusercontent.com/mack-a/v2ray-agent/master/install.sh"
+        wget -c -q "${wgetShowProgressStatus}" -P /etc/v2ray-agent/ -N --no-check-certificate "https://raw.githubusercontent.com/Kenny-Xiang/v2ray-agent/master/install.sh"
     fi
 
     sudo chmod 700 /etc/v2ray-agent/install.sh
@@ -6594,7 +6595,7 @@ updateV2RayAgent() {
     echoContent yellow " ---> 请手动执行[vasma]打开脚本"
     echoContent green " ---> 当前版本：${version}\n"
     echoContent yellow "如更新不成功，请手动执行下面命令\n"
-    echoContent skyBlue "wget -P /root -N --no-check-certificate https://raw.githubusercontent.com/mack-a/v2ray-agent/master/install.sh && chmod 700 /root/install.sh && /root/install.sh"
+    echoContent skyBlue "wget -P /root -N --no-check-certificate https://raw.githubusercontent.com/Kenny-Xiang/v2ray-agent/master/install.sh && chmod 700 /root/install.sh && /root/install.sh"
     echo
     exit 0
 }
@@ -9042,6 +9043,7 @@ manageAccount() {
     echoContent yellow "3.管理其他订阅"
     echoContent yellow "4.添加用户"
     echoContent yellow "5.删除用户"
+    echoContent yellow "6.搬瓦工流量显示"
     echoContent red "=============================================================="
     read -r -p "请输入:" manageAccountStatus
     if [[ "${manageAccountStatus}" == "1" ]]; then
@@ -9054,9 +9056,306 @@ manageAccount() {
         addUser
     elif [[ "${manageAccountStatus}" == "5" ]]; then
         removeUser
+    elif [[ "${manageAccountStatus}" == "6" ]]; then
+        bwgTrafficMenu
     else
         echoContent red " ---> 选择错误"
     fi
+}
+
+# 搬瓦工流量显示：凭据不进入订阅目录，使用独立 timer 避开证书任务的 crontab 清理。
+writeBWGTrafficUpdater() {
+    mkdir -p /etc/v2ray-agent/bwg-traffic/nginx
+    chmod 700 /etc/v2ray-agent/bwg-traffic /etc/v2ray-agent/bwg-traffic/nginx
+    cat <<'BWG_PY' >/etc/v2ray-agent/bwg-traffic/update.py.new || return 1
+import fcntl
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+from decimal import Decimal
+from pathlib import Path
+from urllib.error import HTTPError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
+ROOT = Path(__file__).resolve().parent
+CONFIG = ROOT / "config.json"
+HEADER = ROOT / "nginx" / "usage.conf"
+INCLUDE = "include /etc/v2ray-agent/bwg-traffic/nginx/*.conf;"
+
+
+def remove_file(path):
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def write_file(path, content, mode=0o600):
+    if content is None:
+        remove_file(path)
+        return
+    with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
+        temporary = Path(handle.name)
+        try:
+            handle.write(content)
+            handle.flush()
+            os.fchmod(handle.fileno(), mode)
+            os.replace(temporary, path)
+        finally:
+            remove_file(temporary)
+
+
+def apply_nginx(changes):
+    previous = {}
+    for path in changes:
+        stat = path.stat() if path.exists() else None
+        previous[path] = (path.read_bytes() if stat else None, stat)
+    try:
+        for path, content in changes.items():
+            stat = previous[path][1]
+            write_file(path, content, stat.st_mode & 0o777 if stat else 0o600)
+        # Reload gracefully; never use the installer's stop/start helper.
+        subprocess.run(["nginx", "-t"], check=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["nginx", "-s", "reload"], check=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except Exception:
+        for path, (content, stat) in previous.items():
+            write_file(path, content, stat.st_mode & 0o777 if stat else 0o600)
+            if stat:
+                os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        raise
+
+
+def traffic_header(info):
+    if str(info.get("error")) != "0":
+        raise ValueError("KiwiVM API error")
+    used = Decimal(str(info["data_counter"]))
+    total = Decimal(str(info["plan_monthly_data"]))
+    multiplier = Decimal(str(info["monthly_data_multiplier"]))
+    if not all(value.is_finite() for value in (used, total, multiplier)):
+        raise ValueError("Non-finite usage")
+    if used < 0 or total <= 0 or multiplier <= 0:
+        raise ValueError("Invalid usage")
+    # KiwiVM requires the multiplier on BOTH counters. This is VPS-wide usage.
+    used, total = int(used * multiplier), int(total * multiplier)
+    if total <= 0:
+        raise ValueError("Invalid quota")
+    # Aggregate usage occupies download; reset time is not subscription expiry.
+    return (
+        'add_header Subscription-Userinfo '
+        f'"upload=0; download={used}; total={total}";\n'
+        'add_header Cache-Control "private, no-store";\n'
+    ).encode("ascii")
+
+
+def fetch_header(config):
+    body = urlencode({"veid": config["veid"], "api_key": config["api_key"]}).encode()
+    request = Request("https://api.64clouds.com/v1/getServiceInfo",
+                      data=body, method="POST",
+                      headers={"User-Agent": "v2ray-agent-bwg-traffic/1.0"})
+    with urlopen(request, timeout=15) as response:
+        return traffic_header(json.load(response))
+
+
+def configure(veid, nginx_path, key):
+    if not veid.isdigit() or not key:
+        raise ValueError("VEID and API key are required")
+    config = {"veid": veid, "api_key": key, "nginx_config": nginx_path}
+    header = fetch_header(config)
+    nginx_file = Path(nginx_path)
+    original = nginx_file.read_text()
+    if INCLUDE not in original:
+        marker = "alias /etc/v2ray-agent/subscribe/$1/$2;"
+        if original.count(marker) != 1:
+            raise ValueError("Unrecognized subscription location")
+        original = original.replace(marker, marker + "\n        " + INCLUDE)
+    apply_nginx({
+        nginx_file: original.encode(),
+        HEADER: header,
+        CONFIG: json.dumps(config).encode(),
+    })
+
+
+def update():
+    config = json.loads(CONFIG.read_text())
+    nginx_file = Path(config["nginx_config"])
+    # Subscription setup may temporarily remove this file during reinstallation.
+    if not nginx_file.exists():
+        return
+    if INCLUDE not in nginx_file.read_text():
+        raise ValueError("Enable traffic display again to restore the Nginx hook")
+    try:
+        header = fetch_header(config)
+    except Exception:
+        # Do not show an indefinitely stale quota after API failures.
+        if HEADER.exists() and time.time() - HEADER.stat().st_mtime >= 900:
+            apply_nginx({HEADER: None})
+        raise
+    if HEADER.exists() and HEADER.read_bytes() == header:
+        os.utime(HEADER, None)
+    else:
+        apply_nginx({HEADER: header})
+
+
+def disable():
+    if HEADER.exists():
+        apply_nginx({HEADER: None})
+    remove_file(CONFIG)
+
+
+def main():
+    try:
+        # Serialize manual runs, timer runs, and reconfiguration.
+        with (ROOT / "update.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            action = sys.argv[1]
+            if action == "configure":
+                configure(sys.argv[2], sys.argv[3], sys.stdin.read().strip())
+            elif action == "update":
+                update()
+            elif action == "disable":
+                disable()
+            else:
+                raise ValueError("Unknown action")
+    except HTTPError as error:
+        # Log only the status, never the URL, reason, headers, or response body.
+        print("BWG API request failed (HTTP " + str(error.code) +
+              "). Check API access, credentials and server connectivity.", file=sys.stderr)
+        return 1
+    except Exception as error:
+        # API errors and HTTP exceptions may contain secrets. Never log them.
+        print("BWG traffic operation failed (" + type(error).__name__ +
+              "). Check API credentials, connectivity and nginx -t.", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+BWG_PY
+    chmod 700 /etc/v2ray-agent/bwg-traffic/update.py.new &&
+        mv -f /etc/v2ray-agent/bwg-traffic/update.py.new /etc/v2ray-agent/bwg-traffic/update.py
+}
+
+removeBWGTrafficTimer() {
+    if [[ -f /etc/systemd/system/v2ray-agent-bwg.timer ]]; then
+        systemctl disable --now v2ray-agent-bwg.timer >/dev/null 2>&1
+        systemctl stop v2ray-agent-bwg.service >/dev/null 2>&1
+        rm -f /etc/systemd/system/v2ray-agent-bwg.timer /etc/systemd/system/v2ray-agent-bwg.service
+        systemctl daemon-reload
+    fi
+}
+
+enableBWGTraffic() {
+    if [[ ! -d /run/systemd/system ]]; then
+        echoContent red " ---> 此功能需要 systemd，暂不支持 Alpine/OpenRC"
+        return 1
+    fi
+    if [[ ! -f "${nginxConfigPath}subscribe.conf" ]]; then
+        echoContent yellow " ---> 请先通过「查看订阅」创建订阅，再启用流量显示"
+        return 1
+    fi
+    if ! command -v python3 >/dev/null 2>&1; then
+        ${installType} python3 || return 1
+    fi
+    if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 6))'; then
+        echoContent red " ---> 此功能需要 Python 3.6 或更新版本"
+        return 1
+    fi
+    local bwgVEID=
+    local bwgKey=
+    read -r -p "请输入该 VPS 的 KiwiVM VEID:" bwgVEID
+    read -r -s -p "请输入 KiwiVM API Key（输入不回显）:" bwgKey
+    echo
+    if [[ ! "${bwgVEID}" =~ ^[0-9]+$ || -z "${bwgKey}" ]]; then
+        echoContent red " ---> VEID 或 API Key 不能为空，VEID 必须是数字"
+        return 1
+    fi
+    writeBWGTrafficUpdater || return 1
+    # 密钥只经 stdin 传入，不放入命令参数、日志、订阅文件。
+    if ! printf '%s' "${bwgKey}" | python3 /etc/v2ray-agent/bwg-traffic/update.py configure "${bwgVEID}" "${nginxConfigPath}subscribe.conf"; then
+        unset bwgKey
+        echoContent red " ---> 配置失败，请检查凭据、API 网络连通性及 nginx -t"
+        return 1
+    fi
+    unset bwgKey
+    cat <<'EOF' >/etc/systemd/system/v2ray-agent-bwg.service
+[Unit]
+Description=Update BandwagonHost subscription traffic header
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env python3 /etc/v2ray-agent/bwg-traffic/update.py update
+TimeoutStartSec=60
+UMask=0077
+EOF
+    cat <<'EOF' >/etc/systemd/system/v2ray-agent-bwg.timer
+[Unit]
+Description=Refresh BandwagonHost traffic every five minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Unit=v2ray-agent-bwg.service
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload
+    if ! systemctl enable --now v2ray-agent-bwg.timer; then
+        echoContent red " ---> 流量头已配置，但定时任务启动失败，请检查 systemctl status v2ray-agent-bwg.timer"
+        return 1
+    fi
+    echoContent green " ---> 已启用：原订阅链接保持不变，请在 Clash Verge 中更新订阅"
+    echoContent yellow " ---> 服务端约每5分钟更新，客户端请设置订阅自动更新"
+}
+
+bwgTrafficMenu() {
+    if [[ "$(id -u)" != "0" ]]; then
+        echoContent red " ---> 请使用 root 用户运行脚本以配置搬瓦工流量显示"
+        return 1
+    fi
+    echoContent skyBlue "\n===================== 搬瓦工流量显示 ======================="
+    echoContent yellow "# 显示对应 VPS 的整体流量，所有订阅用户看到同一个用量；不是用户配额"
+    echoContent yellow "# 合并其他机器节点时，此数值仍仅代表配置的搬瓦工 VPS"
+    echoContent yellow "# API 失败时短暂保留旧值；超过15分钟后移除流量头，订阅文件仍可下载"
+    echoContent yellow "1.启用/修改凭据"
+    echoContent yellow "2.立即刷新"
+    echoContent yellow "3.关闭并删除保存的凭据"
+    local bwgAction=
+    read -r -p "请选择:" bwgAction
+    case "${bwgAction}" in
+    1)
+        enableBWGTraffic
+        ;;
+    2)
+        if [[ -f /etc/v2ray-agent/bwg-traffic/config.json ]]; then
+            python3 /etc/v2ray-agent/bwg-traffic/update.py update &&
+                echoContent green " ---> 已刷新，请在客户端更新订阅"
+        else
+            echoContent yellow " ---> 请先启用搬瓦工流量显示"
+        fi
+        ;;
+    3)
+        if [[ -f /etc/v2ray-agent/bwg-traffic/update.py ]]; then
+            # 先撤销响应头；失败时保留 timer 和配置，便于修复后重试。
+            if ! python3 /etc/v2ray-agent/bwg-traffic/update.py disable; then
+                echoContent red " ---> 关闭失败，请检查 nginx -t 后重试"
+                return 1
+            fi
+        fi
+        removeBWGTrafficTimer
+        echoContent green " ---> 已关闭流量显示并删除凭据，请在客户端更新订阅"
+        ;;
+    esac
 }
 
 # 安装订阅
@@ -9141,6 +9440,7 @@ server {
     location ~ ^/s/(clashMeta|default|clashMetaProfiles|sing-box|sing-box_profiles)/(.*) {
         default_type 'text/plain; charset=utf-8';
         alias /etc/v2ray-agent/subscribe/\$1/\$2;
+        include /etc/v2ray-agent/bwg-traffic/nginx/*.conf;
     }
     location / {
     }
