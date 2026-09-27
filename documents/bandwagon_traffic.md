@@ -4,7 +4,7 @@
 
 ## 启用
 
-使用 root 用户运行脚本。要求服务器使用 systemd，并安装 Python 3.8 或更新版本。缺少 Python 时菜单会通过系统包管理器安装；Alpine/OpenRC 暂不支持此可选功能。
+使用 root 用户运行脚本。要求服务器使用 systemd，并安装 Python 3.6 或更新版本。仅使用 Python 标准库，无需安装 pip 依赖。缺少 Python 时菜单会通过系统包管理器安装；Alpine/OpenRC 暂不支持此可选功能。
 
 1. 使用本 fork 的中文安装脚本；已有安装可以先下载本 fork 的新版脚本运行，无需重装代理核心。
 2. 在 KiwiVM 控制面板的 API 页面获取这台 VPS 的 VEID 和 API Key。
@@ -57,6 +57,8 @@ curl --silent --show-error --dump-header - --output /dev/null \
 
 新增订阅的 Nginx 模板包含流量配置引用，已有安装通过启用菜单补上引用。重新生成节点文件不会改变凭据。如果外部脚本覆盖了 Nginx 的订阅配置，请重新启用此功能恢复引用。
 
+从要求 Python 3.8 的旧版升级后，重新进入「1.启用/修改凭据」会生成兼容 Python 3.6 的查询程序；只替换安装脚本不会自动更新已生成的查询程序。
+
 ## 验证开发改动
 
 ~~~bash
@@ -66,5 +68,7 @@ BWG_TEST_NGINX=/usr/sbin/nginx python3 -m unittest discover -s tests -p 'test_ba
 ~~~
 
 最后一条额外启动临时 Nginx，在本机随机端口验证完整配置和节点列表的响应头、原订阅正文、禁用后的行为。测试使用模拟 API 数据，不访问真实 VPS 或真实 KiwiVM 凭据。
+
+GitHub Actions 使用 Python 3.6.15 容器执行单元测试，检查最低支持版本的兼容性。
 
 参考：[Clash Verge Rev 订阅响应头](https://www.clashverge.dev/guide/url_schemes.html)、[KiwiVM API 文档公开副本](https://github.com/dhslegen/bandwagon-dashboard/blob/main/Bandwagon%20Host%20REST%20API.md)、[Nginx 响应头](https://nginx.org/en/docs/http/ngx_http_headers_module.html)、[Nginx 平滑重载](https://nginx.org/en/docs/control.html)。KiwiVM 最新接口文档请以账户控制面板内的 API 页面为准。

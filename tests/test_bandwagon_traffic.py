@@ -173,7 +173,7 @@ class TrafficTests(unittest.TestCase):
             request.return_value.__enter__.return_value = io.BytesIO(
                 json.dumps(usage()).encode())
             result = real_app.fetch_header({"veid": "123", "api_key": "a&b"})
-            sent = request.call_args.args[0]
+            sent = request.call_args[0][0]
             self.assertEqual(sent.full_url, "https://api.64clouds.com/v1/getServiceInfo")
             self.assertEqual(sent.get_method(), "POST")
             self.assertEqual(parse_qs(sent.data.decode())["api_key"], ["a&b"])
@@ -225,7 +225,7 @@ class NginxIntegrationTests(unittest.TestCase):
                 f"events {{ }}\nhttp {{ access_log off; include {site}; }}\n")
             base = [os.environ["BWG_TEST_NGINX"], "-p", str(root), "-c", str(main)]
             run = subprocess.run
-            started = run(base, capture_output=True)
+            started = run(base, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             self.assertEqual(started.returncode, 0, started.stderr.decode())
 
             def nginx(command, **kwargs):
@@ -258,7 +258,8 @@ class NginxIntegrationTests(unittest.TestCase):
                     get("clashMetaProfiles", None)
                 self.assertNotIn("private-api-key", (root / "error.log").read_text())
             finally:
-                run(base + ["-s", "quit"], check=True, capture_output=True)
+                run(base + ["-s", "quit"], check=True,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
 
 if __name__ == "__main__":

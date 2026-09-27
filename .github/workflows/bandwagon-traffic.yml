@@ -1,0 +1,31 @@
+name: Bandwagon traffic compatibility
+
+on:
+  pull_request:
+    paths:
+      - install.sh
+      - tests/test_bandwagon_traffic.py
+      - .github/workflows/bandwagon-traffic.yml
+  push:
+    branches: [master]
+    paths:
+      - install.sh
+      - tests/test_bandwagon_traffic.py
+      - .github/workflows/bandwagon-traffic.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python36:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check shell syntax
+        run: bash -n install.sh
+      - name: Test with Python 3.6.15
+        run: |
+          docker run --rm --volume "$PWD:/src:ro" --workdir /src \
+            python:3.6.15-slim-buster \
+            python -B -m unittest discover -s tests -p 'test_bandwagon_traffic.py' -v

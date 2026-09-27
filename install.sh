@@ -9086,9 +9086,16 @@ HEADER = ROOT / "nginx" / "usage.conf"
 INCLUDE = "include /etc/v2ray-agent/bwg-traffic/nginx/*.conf;"
 
 
+def remove_file(path):
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
 def write_file(path, content, mode=0o600):
     if content is None:
-        path.unlink(missing_ok=True)
+        remove_file(path)
         return
     with tempfile.NamedTemporaryFile(dir=path.parent, delete=False) as handle:
         temporary = Path(handle.name)
@@ -9098,7 +9105,7 @@ def write_file(path, content, mode=0o600):
             os.fchmod(handle.fileno(), mode)
             os.replace(temporary, path)
         finally:
-            temporary.unlink(missing_ok=True)
+            remove_file(temporary)
 
 
 def apply_nginx(changes):
@@ -9111,8 +9118,10 @@ def apply_nginx(changes):
             stat = previous[path][1]
             write_file(path, content, stat.st_mode & 0o777 if stat else 0o600)
         # Reload gracefully; never use the installer's stop/start helper.
-        subprocess.run(["nginx", "-t"], check=True, capture_output=True)
-        subprocess.run(["nginx", "-s", "reload"], check=True, capture_output=True)
+        subprocess.run(["nginx", "-t"], check=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(["nginx", "-s", "reload"], check=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except Exception:
         for path, (content, stat) in previous.items():
             write_file(path, content, stat.st_mode & 0o777 if stat else 0o600)
@@ -9194,7 +9203,7 @@ def update():
 def disable():
     if HEADER.exists():
         apply_nginx({HEADER: None})
-    CONFIG.unlink(missing_ok=True)
+    remove_file(CONFIG)
 
 
 def main():
@@ -9247,8 +9256,8 @@ enableBWGTraffic() {
     if ! command -v python3 >/dev/null 2>&1; then
         ${installType} python3 || return 1
     fi
-    if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 8))'; then
-        echoContent red " ---> 此功能需要 Python 3.8 或更新版本"
+    if ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 6))'; then
+        echoContent red " ---> 此功能需要 Python 3.6 或更新版本"
         return 1
     fi
     local bwgVEID=
