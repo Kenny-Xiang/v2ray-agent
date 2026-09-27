@@ -9077,6 +9077,7 @@ import tempfile
 import time
 from decimal import Decimal
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -9155,7 +9156,8 @@ def traffic_header(info):
 def fetch_header(config):
     body = urlencode({"veid": config["veid"], "api_key": config["api_key"]}).encode()
     request = Request("https://api.64clouds.com/v1/getServiceInfo",
-                      data=body, method="POST")
+                      data=body, method="POST",
+                      headers={"User-Agent": "v2ray-agent-bwg-traffic/1.0"})
     with urlopen(request, timeout=15) as response:
         return traffic_header(json.load(response))
 
@@ -9220,6 +9222,11 @@ def main():
                 disable()
             else:
                 raise ValueError("Unknown action")
+    except HTTPError as error:
+        # Log only the status, never the URL, reason, headers, or response body.
+        print("BWG API request failed (HTTP " + str(error.code) +
+              "). Check API access, credentials and server connectivity.", file=sys.stderr)
+        return 1
     except Exception as error:
         # API errors and HTTP exceptions may contain secrets. Never log them.
         print("BWG traffic operation failed (" + type(error).__name__ +

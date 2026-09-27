@@ -10,6 +10,7 @@ import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import HTTPError
 from urllib.parse import parse_qs
 from urllib.request import urlopen
 
@@ -176,6 +177,7 @@ class TrafficTests(unittest.TestCase):
             sent = request.call_args[0][0]
             self.assertEqual(sent.full_url, "https://api.64clouds.com/v1/getServiceInfo")
             self.assertEqual(sent.get_method(), "POST")
+            self.assertEqual(sent.get_header("User-agent"), "v2ray-agent-bwg-traffic/1.0")
             self.assertEqual(parse_qs(sent.data.decode())["api_key"], ["a&b"])
             self.assertIn(b"download=120;", result)
 
@@ -196,6 +198,22 @@ class TrafficTests(unittest.TestCase):
             self.assertIn("OSError", stderr.getvalue())
             self.assertNotIn("private-api-key", stderr.getvalue())
             self.assertNotIn("https://", stderr.getvalue())
+
+    def test_http_errors_report_status_without_leaking_response_or_credentials(self):
+        self.enable()
+        for status in (401, 403, 429, 503):
+            with self.subTest(status=status):
+                self.fetch.side_effect = HTTPError(
+                    "https://example.com/?api_key=private-api-key", status,
+                    "private-api-key", {"X-Secret": "private-api-key"},
+                    io.BytesIO(b"private-api-key"))
+                with patch.object(self.app.sys, "argv", ["update.py", "update"]), \
+                     patch.object(self.app.sys, "stderr", new_callable=io.StringIO) as stderr:
+                    self.assertEqual(self.app.main(), 1)
+                    self.assertIn("HTTP " + str(status), stderr.getvalue())
+                    self.assertNotIn("nginx", stderr.getvalue())
+                    self.assertNotIn("private-api-key", stderr.getvalue())
+                    self.assertNotIn("https://", stderr.getvalue())
 
 
 @unittest.skipUnless(os.environ.get("BWG_TEST_NGINX"), "Set BWG_TEST_NGINX for real HTTP tests")
